@@ -1,0 +1,142 @@
+{
+  "shadowCaptureEnabled": true,
+  "autoTrainEnabled": false,
+  "liveDecisionSource": "production",
+  "lastDecisionSourceSwitchAt": "2026-04-05 18:15:50",
+  "autoTrainMinWeight": 12.0,
+  "autoTrainBatchWeight": 24.0,
+  "autoTrainMaxBatchSamples": 4,
+  "autoTrainMinBatchSamples": 2,
+  "autoCheckpointMinTrain": 50,
+  "autoCheckpointMinWeight": 12.0,
+  "shadowEvalMinReferenceSamples": 8,
+  "lastAutoTrainAt": "2026-04-12 10:53:25",
+  "lastAutoTrainCount": 1,
+  "lastAutoTrainWeight": 5.2,
+  "lastShadowEvalAt": "2026-04-12 10:53:24",
+  "lastShadowEvalStatus": "accepted",
+  "lastShadowEvalReason": "passed shadow guardrails",
+  "lastShadowEvalReferenceSamples": 148,
+  "lastShadowEvalBatchSamples": 1,
+  "lastShadowEvalMetrics": {
+    "guardActive": true,
+    "coldStartUsed": false,
+    "reference": {
+      "baseline": {
+        "samples": 148,
+        "attack": {
+          "positives": 80,
+          "negatives": 68,
+          "precision": 0.962,
+          "recall": 0.95,
+          "falsePositiveRate": 0.0441,
+          "positiveScoreMean": 0.5923,
+          "negativeScoreMean": 0.4784,
+          "benignFalsePositiveRate": 0.0227,
+          "benignNegativeScoreMean": 0.4742,
+          "knownRecall": 0.95
+        },
+        "malware": {
+          "positives": 22,
+          "negatives": 126,
+          "precision": 0.9167,
+          "recall": 1.0,
+          "falsePositiveRate": 0.0159,
+          "positiveScoreMean": 0.6187,
+          "negativeScoreMean": 0.4144,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4639,
+          "knownRecall": 1.0
+        }
+      },
+      "candidate": {
+        "samples": 148,
+        "attack": {
+          "positives": 80,
+          "negatives": 68,
+          "precision": 0.9733,
+          "recall": 0.9125,
+          "falsePositiveRate": 0.0294,
+          "positiveScoreMean": 0.5956,
+          "negativeScoreMean": 0.4753,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4684,
+          "knownRecall": 0.9125
+        },
+        "malware": {
+          "positives": 22,
+          "negatives": 126,
+          "precision": 0.8462,
+          "recall": 1.0,
+          "falsePositiveRate": 0.0317,
+          "positiveScoreMean": 0.6229,
+          "negativeScoreMean": 0.4155,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4602,
+          "knownRecall": 1.0
+        }
+      }
+    },
+    "batch": {
+      "baseline": {
+        "samples": 1,
+        "attack": {
+          "positives": 0,
+          "negatives": 1,
+          "precision": 0.0,
+          "recall": null,
+          "falsePositiveRate": 1.0,
+          "positiveScoreMean": null,
+          "negativeScoreMean": 0.5086,
+          "benignFalsePositiveRate": 1.0,
+          "benignNegativeScoreMean": 0.5086,
+          "knownRecall": null
+        },
+        "malware": {
+          "positives": 0,
+          "negatives": 1,
+          "precision": null,
+          "recall": null,
+          "falsePositiveRate": 0.0,
+          "positiveScoreMean": null,
+          "negativeScoreMean": 0.4388,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4388,
+          "knownRecall": null
+        }
+      },
+      "candidate": {
+        "samples": 1,
+        "attack": {
+          "positives": 0,
+          "negatives": 1,
+          "precision": null,
+          "recall": null,
+          "falsePositiveRate": 0.0,
+          "positiveScoreMean": null,
+          "negativeScoreMean": 0.4835,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4835,
+          "knownRecall": null
+        },
+        "malware": {
+          "positives": 0,
+          "negatives": 1,
+          "precision": null,
+          "recall": null,
+          "falsePositiveRate": 0.0,
+          "positiveScoreMean": null,
+          "negativeScoreMean": 0.4246,
+          "benignFalsePositiveRate": 0.0,
+          "benignNegativeScoreMean": 0.4246,
+          "knownRecall": null
+        }
+      }
+    }
+  },
+  "lastCheckpointAt": "2026-04-12 10:53:24",
+  "lastCheckpointDir": "C:\\Users\\jenxk\\Desktop\\ai_nidps\\online_learning\\checkpoints\\checkpoint_20260412_105324_786881",
+  "lastRollbackAt": null,
+  "lastRollbackDir": null,
+  "lastRollbackReason": null
+}
