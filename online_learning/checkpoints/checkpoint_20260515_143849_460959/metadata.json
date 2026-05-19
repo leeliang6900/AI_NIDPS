@@ -1,0 +1,6 @@
+{
+  "createdAt": "2026-05-15 14:38:49",
+  "checkpointDir": "C:\\Users\\jenxk\\Desktop\\ai_nidps\\online_learning\\checkpoints\\checkpoint_20260515_143849_460959",
+  "attackModel": "C:\\Users\\jenxk\\Desktop\\ai_nidps\\online_learning\\checkpoints\\checkpoint_20260515_143849_460959\\model_attack_online.pkl",
+  "malwareModel": "C:\\Users\\jenxk\\Desktop\\ai_nidps\\online_learning\\checkpoints\\checkpoint_20260515_143849_460959\\model_malware_online.pkl"
+}

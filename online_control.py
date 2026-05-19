@@ -147,7 +147,7 @@ def update_auto_train_stats(trained_count: int, trained_weight: float = 0.0) -> 
 
     return _update_control_state(mutator)
 
-
+# ===================== 写Accepted和rejected的结果 =====================
 def update_shadow_eval_stats(result: Dict[str, Any]) -> Dict[str, Any]:
     def mutator(state: Dict[str, Any]) -> None:
         state["lastShadowEvalAt"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -158,8 +158,9 @@ def update_shadow_eval_stats(result: Dict[str, Any]) -> Dict[str, Any]:
         state["lastShadowEvalMetrics"] = result.get("metrics") or {}
 
     return _update_control_state(mutator)
+# ===================== ENd =====================
 
-
+# ===================== 保存CheckPoint =====================
 def create_shadow_checkpoint() -> Dict[str, Any]:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
     checkpoint_dir = CHECKPOINTS_DIR / f"checkpoint_{timestamp}"
@@ -190,8 +191,9 @@ def create_shadow_checkpoint() -> Dict[str, Any]:
 
     _update_control_state(mutator)
     return metadata
+# ===================== ENd =====================
 
-
+# ===================== RollBack Shadow model =====================
 def restore_shadow_checkpoint(checkpoint_dir: str | Path, reason: str = "") -> Dict[str, Any]:
     checkpoint_dir = _resolve_managed_checkpoint_dir(checkpoint_dir)
     attack_source = checkpoint_dir / ATTACK_ONLINE_MODEL_PATH.name
@@ -218,3 +220,4 @@ def restore_shadow_checkpoint(checkpoint_dir: str | Path, reason: str = "") -> D
         "checkpointDir": str(checkpoint_dir),
         "reason": reason or "manual restore",
     }
+# ===================== End =====================

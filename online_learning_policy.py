@@ -286,7 +286,7 @@ def _review_inconsistent(sample) -> bool:
 
     return False
 
-
+# ===================== Should Hold for review =====================
 def should_hold_for_review(sample) -> bool:
     if getattr(sample, 'attack_label', None) is None and getattr(sample, 'malware_label', None) is None:
         return False
@@ -314,7 +314,7 @@ def should_hold_for_review(sample) -> bool:
     if high_novelty and risk_bucket in {'medium', 'high'}:
         return True
     return False
-
+# ===================== End =====================
 
 def _family_identity(sample) -> str:
     return str(sample.family_label or sample.rule or sample.category or 'unknown').strip().lower()
@@ -660,7 +660,7 @@ def compute_learning_weight(sample, reason: str, eligible: bool) -> float:
     weight = base + size_bonus + novelty_bonus + shadow_bonus
     return round(min(weight, 15.0), 2)
 
-
+# ===================== 决定样本的Policy =====================
 def apply_learning_policy(samples: Iterable) -> bool:
     samples = list(samples)
     changed = False
@@ -834,7 +834,7 @@ def apply_learning_policy(samples: Iterable) -> bool:
             changed = True
 
     return changed
-
+# ===================== End =====================
 
 def prune_redundant_learning_samples(samples: Iterable) -> list:
     ordered = list(samples)

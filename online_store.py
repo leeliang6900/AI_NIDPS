@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 import os
 from pathlib import Path
+import threading
+import time
 from typing import Iterable, Iterator, Optional
 
 from online_schema import OnlineSample
@@ -22,6 +24,7 @@ class OnlineSampleStore:
     def __init__(self, path: Path | str = DEFAULT_ONLINE_SAMPLES_PATH):
         self.path = Path(path)
         self.lock_path = self.path.with_suffix(f"{self.path.suffix}.lock")
+        self._process_lock = threading.RLock()
 
     def ensure_exists(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -31,24 +34,35 @@ class OnlineSampleStore:
     @contextmanager
     def _locked(self):
         self.ensure_exists()
-        with self.lock_path.open("r+b") as lock_fh:
-            if self.lock_path.stat().st_size == 0:
-                lock_fh.seek(0)
-                lock_fh.write(b"0")
-                lock_fh.flush()
-            lock_fh.seek(0)
-            if os.name == "nt":
-                msvcrt.locking(lock_fh.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
+        with self._process_lock:
+            with self.lock_path.open("r+b") as lock_fh:
+                if self.lock_path.stat().st_size == 0:
+                    lock_fh.seek(0)
+                    lock_fh.write(b"0")
+                    lock_fh.flush()
                 lock_fh.seek(0)
                 if os.name == "nt":
-                    msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    deadline = time.time() + 3.0
+                    while True:
+                        try:
+                            msvcrt.locking(lock_fh.fileno(), msvcrt.LK_NBLCK, 1)
+                            break
+                        except OSError as exc:
+                            if exc.errno not in {13, 36}:
+                                raise
+                            if time.time() >= deadline:
+                                raise
+                            time.sleep(0.05)
                 else:
-                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+                    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    yield
+                finally:
+                    lock_fh.seek(0)
+                    if os.name == "nt":
+                        msvcrt.locking(lock_fh.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
     def _read_samples_locked(self) -> list[OnlineSample]:
         if not self.path.exists():

@@ -613,11 +613,22 @@ def _get_cached_online_samples():
         if stamp == ONLINE_SAMPLE_CACHE["stamp"]:
             return list(ONLINE_SAMPLE_CACHE["samples"])
 
-    samples = ONLINE_STORE.list_samples()
+    try:
+        samples = ONLINE_STORE.list_samples()
+    except OSError:
+        with ONLINE_SAMPLE_CACHE_LOCK:
+            return list(ONLINE_SAMPLE_CACHE["samples"])
     with ONLINE_SAMPLE_CACHE_LOCK:
         ONLINE_SAMPLE_CACHE["stamp"] = stamp
         ONLINE_SAMPLE_CACHE["samples"] = samples
     return list(samples)
+
+
+def _safe_list_distinct_trainable_samples():
+    try:
+        return list_distinct_trainable_samples()
+    except OSError:
+        return []
 
 
 def _get_cached_online_models_if_ready():
@@ -1279,7 +1290,7 @@ def summarize_online_learning() -> dict:
     candidate = 0
     labeled = 0
     trained = 0
-    trainable_ready = list_distinct_trainable_samples()
+    trainable_ready = _safe_list_distinct_trainable_samples()
     trainable_ids = {sample.event_id for sample in trainable_ready}
     ready_weight = 0.0
     control = load_control_state()
@@ -1694,7 +1705,7 @@ def filter_online_samples(status: str, limit: int) -> list[dict]:
     event_map = _get_cached_event_map()
     trainable_ids = set()
     if status == 'ready':
-        trainable_ids = {sample.event_id for sample in list_distinct_trainable_samples()}
+        trainable_ids = {sample.event_id for sample in _safe_list_distinct_trainable_samples()}
     for sample in _get_cached_online_samples():
         if status == 'pending' and sample.label_status != 'pending':
             continue
@@ -1894,7 +1905,7 @@ def update_shadow_capture():
     state = set_shadow_capture_enabled(enabled)
     return jsonify({"ok": True, "state": state})
 
-
+# ===================== Shadow Rollback =====================
 @app.route("/api/shadow-rollback", methods=["POST"])
 @require_admin_access
 def rollback_shadow():
@@ -1927,7 +1938,7 @@ def promote_shadow_placeholder():
         "error": "Promote is not enabled yet. Current production uses XGBoost joblib models while online learning uses River pickle models, so they cannot be swapped directly.",
     }), 409
 
-
+# ===================== Live ALerts =====================
 @app.route("/api/events")
 def get_events():
     events = read_latest_events(100)
@@ -1951,7 +1962,7 @@ def get_events():
         )
         for event in events
     ])
-
+# ===================== ENd=====================
 
 @app.route("/api/stats")
 def get_stats():
@@ -2066,7 +2077,7 @@ def build_manual_response_cards(limit: int | None = 10) -> tuple[list[dict], dic
 
     return sanitized_items, counts
 
-
+# ===================== Manual Response =====================
 @app.route("/api/manual-response")
 def get_manual_response():
     items, counts = build_manual_response_cards(limit=10)
@@ -2074,8 +2085,9 @@ def get_manual_response():
         "items": items,
         "counts": counts,
     })
+# ===================== ENd =====================
 
-
+# ===================== TimeLine =====================
 @app.route("/api/timeline")
 def get_timeline():
     events = read_latest_events(20)
@@ -2109,8 +2121,9 @@ def get_timeline():
         })
 
     return jsonify(timeline)
+# ===================== End =====================
 
-
+# =====================IP Log=====================
 @app.route("/api/logs")
 def get_logs():
     ip = request.args.get("ip", "").strip()
@@ -2126,8 +2139,9 @@ def get_logs():
     filtered = filtered[-50:]
     filtered.reverse()
     return jsonify([normalize_event_scores_for_display(event) for event in filtered])
+# ===================== End =====================
 
-
+# ===================== HoneyPot Log =====================
 @app.route("/api/honeypot-logs")
 @require_admin_access
 def get_honeypot_logs():
@@ -2143,8 +2157,9 @@ def get_honeypot_logs():
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
+# ===================== End =====================
 
-
+# ===================== Unblock =====================
 @app.route("/api/unblock", methods=["POST"])
 @require_admin_access
 def unblock_ip():
@@ -2211,7 +2226,7 @@ def unblock_ip():
         return jsonify({"ok": False, "error": str(exc)}), 400
     except Exception as exc:
         return jsonify({"ok": False, "error": str(exc)}), 500
-
+# ===================== End =====================
 
 if __name__ == "__main__":
     start_shadow_automation_worker()

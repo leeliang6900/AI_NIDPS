@@ -244,7 +244,8 @@ SSH_HONEYPOT_FASTPATH_MIN_PKTS = 8
 # mistypes a password a couple of times. Keep log-first redirect fast, but do
 # not fire on 1-3 isolated failures.
 SSH_HONEYPOT_FASTPATH_MIN_ROUTER_FAILS = 2
-SSH_HONEYPOT_REDIRECT_COOLDOWN_SEC = 8.0
+SSH_HONEYPOT_REDIRECT_COOLDOWN_SEC = 45.0
+SSH_HONEYPOT_EVENT_DEDUP_SEC = 10.0
 SSH_ROUTER_LOG_MAC_RETRY_DELAY_SEC = 0.12
 
 MIN_FLOWS_TO_CONSIDER = 15
@@ -331,6 +332,8 @@ _router_brute_confirm_cache: Dict[Tuple[str, str], Tuple[float, int]] = {}
 _router_brute_confirm_cache_lock = threading.Lock()
 _recent_honeypot_redirects: Dict[str, float] = {}
 _recent_honeypot_redirects_lock = threading.Lock()
+_recent_ssh_honeypot_events: Dict[Tuple[str, str], float] = {}
+_recent_ssh_honeypot_events_lock = threading.Lock()
 
 # ===================== MAC / ARP =====================
 ARP_CACHE_TTL_SEC = 180
@@ -707,6 +710,24 @@ def _was_recently_honeypot_redirected(src_ip: str, now_ts: Optional[float] = Non
         if (now_value - ts) > SSH_HONEYPOT_REDIRECT_COOLDOWN_SEC:
             _recent_honeypot_redirects.pop(str(src_ip), None)
             return False
+        return True
+
+
+def _reserve_ssh_honeypot_event(src_ip: str, dst_ip: str, now_ts: Optional[float] = None) -> bool:
+    now_value = float(now_ts or time.time())
+    key = (str(src_ip), str(dst_ip))
+    with _recent_ssh_honeypot_events_lock:
+        expired = [
+            event_key
+            for event_key, event_ts in _recent_ssh_honeypot_events.items()
+            if (now_value - event_ts) > SSH_HONEYPOT_EVENT_DEDUP_SEC
+        ]
+        for event_key in expired:
+            _recent_ssh_honeypot_events.pop(event_key, None)
+        last_ts = _recent_ssh_honeypot_events.get(key)
+        if last_ts is not None and (now_value - last_ts) <= SSH_HONEYPOT_EVENT_DEDUP_SEC:
+            return False
+        _recent_ssh_honeypot_events[key] = now_value
         return True
 
 
@@ -1195,15 +1216,16 @@ def resolve_endpoint_mac_strict(ip: str, macr, router_mac: str) -> str:
 
 
 def resolve_endpoint_mac_strict_retry(ip: str, macr, router_mac: str, retry_delay_sec: float = SSH_ROUTER_LOG_MAC_RETRY_DELAY_SEC) -> str:
-    mac = resolve_endpoint_mac_strict(ip, macr, router_mac)
-    if mac != "??":
-        return mac
-    if retry_delay_sec > 0:
-        try:
-            time.sleep(retry_delay_sec)
-        except Exception:
-            pass
-    return resolve_endpoint_mac_strict(ip, macr, router_mac)
+    for attempt in range(3):
+        mac = resolve_endpoint_mac_strict(ip, macr, router_mac)
+        if mac != "??":
+            return mac
+        if attempt < 2 and retry_delay_sec > 0:
+            try:
+                time.sleep(retry_delay_sec)
+            except Exception:
+                pass
+    return "??"
 
 
 class MacResolverSingle:
@@ -2957,6 +2979,7 @@ def main():
         print("[+] Initializing router context, MAC resolver, and models...", flush=True)
 
     ssh = MikroTikSSH(ROUTER_IP, ROUTER_USER, ROUTER_PASS)
+    router_log_ssh = MikroTikSSH(ROUTER_IP, ROUTER_USER, ROUTER_PASS)
     try:
         ensure_drop_rules(ssh)
     except Exception:
@@ -3100,18 +3123,129 @@ def main():
                 ssh,
                 src,
                 "ssh",
-                force_refresh=True,
+                force_refresh=False,
             )
         except Exception:
             router_fail_count = 0
         fast_confirmed = router_fail_count >= SSH_HONEYPOT_FASTPATH_MIN_ROUTER_FAILS
 
-        # When RouterOS auth-failure logs have already confirmed this SSH brute
-        # attempt, let the dedicated router-log watcher own the visible alert
-        # and redirect event. NetFlow fast-path stays as a fallback for cases
-        # where log confirmation is not available yet.
         if fast_confirmed:
-            return False
+            src_mac = resolve_endpoint_mac_strict_retry(src, macr, router_mac)
+            dst_mac = resolve_endpoint_mac_strict(dst, macr, router_mac)
+            agg = build_router_log_ssh_display_agg(a, router_fail_count)
+            row_feat = build_row_features(WINDOW_SEC, agg)
+            shadow_atk, shadow_mal = score_shadow_event(row_feat)
+            decision_source = get_live_decision_source()
+            prod_atk = float(predict_probs(model_attack, feats_attack, row_feat).get(1, 0.0))
+            atk = prod_atk
+            shadow_attack_value = _optional_float(shadow_atk)
+            if decision_source == "shadow" and shadow_attack_value is not None:
+                atk = float(shadow_attack_value)
+            else:
+                decision_source = "production"
+            atk, _ignored_mal = apply_smoothing(src, "SSH_BRUTE_FORCE", atk, 0.0)
+            atk_thr = THR_ATTACK.get("SSH_BRUTE_FORCE", THR_ATTACK_DEFAULT)
+            display_atk = stabilize_display_score(src, "SSH_BRUTE_FORCE", atk, now_ts)
+            display_atk_thr = atk_thr
+
+            redirect_result = add_ip_to_list(
+                ssh,
+                src,
+                HONEYPOT_BRUTEFORCE_LIST,
+                comment="AI:SSH_BRUTE_FORCE",
+            )
+            if redirect_result not in {"added", "added_unverified", "already_listed"}:
+                return False
+
+            _mark_recent_honeypot_redirect(src, now_ts)
+            mark_router_log_seen(src)
+            drop_pending_observed_brute(src, dst)
+            drop_pending_low_value_observed(src, dst, drop_related=True)
+            clear_honeypot_redirect_connections(ssh, src)
+            remember_attack_pair(src, dst, agg, "SSH_BRUTE_FORCE", recent_attack_pairs, now_ts)
+            aggs.pop((src, dst), None)
+            history.pop((src, dst), None)
+            consecutive_hits.pop((src, "SSH_BRUTE_FORCE"), None)
+            with honeypot_lock:
+                honeypot_redirected[key] = True
+
+            if redirect_result == "already_listed":
+                return True
+
+            should_emit_event = _reserve_ssh_honeypot_event(src, dst, now_ts)
+            if should_emit_event:
+                pretty_block(
+                    "SSH_BRUTE_FORCE",
+                    src,
+                    src_mac,
+                    dst,
+                    dst_mac,
+                    agg,
+                    display_atk,
+                    "",
+                    display_atk_thr,
+                    "",
+                    "REDIRECTED_TO_HONEYPOT",
+                    extra=f" {src} list={HONEYPOT_BRUTEFORCE_LIST} (fast-confirm {router_fail_count} fails)",
+                )
+
+            evt = {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "category": "ATTACK",
+                "rule": "SSH_BRUTE_FORCE",
+                "src": src,
+                "src_mac": src_mac,
+                "dst": dst,
+                "dst_mac": dst_mac,
+                "flows": agg.flows,
+                "spkts": agg.s_pkts,
+                "dpkts": agg.d_pkts,
+                "sbytes": agg.s_bytes,
+                "dbytes": agg.d_bytes,
+                "uniq_dports": agg.uniq_dports(),
+                "proto": agg.top_proto(),
+                "top_dport": agg.top_dport(),
+                "atk": display_atk,
+                "prod_atk": prod_atk,
+                "mal": "",
+                "prod_mal": "",
+                "shadow_atk": shadow_atk,
+                "shadow_mal": shadow_mal,
+                "atk_thr": display_atk_thr,
+                "mal_thr": "",
+                "decision_source": f"router_confirm_{decision_source}",
+                "decision": "REDIRECTED_TO_HONEYPOT",
+            }
+            if should_emit_event:
+                finalize_event(evt, "ATTACK", "SSH_BRUTE_FORCE", src, dst, row_feat)
+
+            try:
+                log_honeypot_sample(
+                    build_honeypot_sample_payload(
+                        action="REDIRECTED_TO_HONEYPOT",
+                        rule="SSH_BRUTE_FORCE",
+                        category="ATTACK",
+                        src=src,
+                        src_mac=src_mac,
+                        dst=dst,
+                        dst_mac=dst_mac,
+                        a=agg,
+                        atk=atk,
+                        mal="",
+                        shadow_atk=shadow_atk,
+                        shadow_mal=shadow_mal,
+                        decision_source=f"router_confirm_{decision_source}",
+                        row_feat=row_feat,
+                        extra={
+                            "router_address_list": HONEYPOT_BRUTEFORCE_LIST,
+                            "router_failures": int(router_fail_count),
+                            "fast_confirm": True,
+                        },
+                    )
+                )
+            except Exception as exc:
+                print(f"[honeypot-sample] {exc}")
+            return True
 
         if a is None:
             return False
@@ -3122,15 +3256,14 @@ def main():
                 reverse_a = aggs.get((dst, src))
                 a_eval = build_eval_agg(a, reverse_a)
 
-        rule = detect_rule_type(a_eval)
-        if rule != "SSH_BRUTE_FORCE":
-            return False
-
         if (
             a_eval.flows < SSH_HONEYPOT_FASTPATH_MIN_FLOWS
             or a_eval.s_pkts < SSH_HONEYPOT_FASTPATH_MIN_PKTS
+            or a_eval.uniq_dports() > BRUTE_MAX_UNIQ_DPORTS
+            or a_eval.s_bytes > BRUTE_MAX_SBYTES
         ):
             return False
+        rule = "SSH_BRUTE_FORCE"
 
         row_feat = build_row_features(WINDOW_SEC, a_eval)
         shadow_atk, shadow_mal = score_shadow_event(row_feat)
@@ -3145,14 +3278,15 @@ def main():
 
         atk, _ignored_mal = apply_smoothing(src, rule, atk, 0.0)
         atk_thr = THR_ATTACK.get(rule, THR_ATTACK_DEFAULT)
-        ai_pass = atk >= atk_thr
-        if not ai_pass:
-            return False
+        # For router-targeted, untrusted SSH traffic that already matches the
+        # brute-force rule on the live aggregate, do not wait for the model
+        # score to cross threshold again. This path exists specifically to keep
+        # SSH honeypot redirection responsive even when RouterOS log
+        # confirmation is delayed or sparse.
+        display_atk = stabilize_display_score(src, rule, max(float(atk), float(atk_thr)), now_ts)
+        display_atk_thr = atk_thr
 
-        display_atk = stabilize_display_score(src, rule, atk, now_ts) if ai_pass else ""
-        display_atk_thr = atk_thr if ai_pass else ""
-
-        src_mac = resolve_endpoint_mac_strict(src, macr, router_mac)
+        src_mac = resolve_endpoint_mac_strict_retry(src, macr, router_mac)
         dst_mac = resolve_endpoint_mac_strict(dst, macr, router_mac)
         redirect_result = add_ip_to_list(
             ssh,
@@ -3178,7 +3312,8 @@ def main():
         if redirect_result == "already_listed":
             return True
 
-        if PRINT_BLOCK_EVENTS or PRINT_NONBLOCKED_ALERTS:
+        should_emit_event = _reserve_ssh_honeypot_event(src, dst, now_ts)
+        if should_emit_event and (PRINT_BLOCK_EVENTS or PRINT_NONBLOCKED_ALERTS):
             pretty_block(
                 rule,
                 src,
@@ -3221,7 +3356,8 @@ def main():
             "decision_source": decision_source,
             "decision": "REDIRECTED_TO_HONEYPOT",
         }
-        finalize_event(evt, "ATTACK", rule, src, dst, row_feat)
+        if should_emit_event:
+            finalize_event(evt, "ATTACK", rule, src, dst, row_feat)
 
         try:
             log_honeypot_sample(
@@ -3251,11 +3387,12 @@ def main():
         while not stop_evt.is_set():
             time.sleep(ROUTER_SSH_HONEYPOT_LOG_WATCHER_POLL_SEC)
             try:
-                recent_sources = get_router_failed_login_sources(ssh, "ssh")
+                recent_sources = get_router_failed_login_sources(router_log_ssh, "ssh")
             except Exception:
                 continue
 
             for src, (fail_count, latest_failure_ts) in recent_sources.items():
+                _set_router_brute_confirm_cache(src, "ssh", fail_count)
                 if fail_count < SSH_HONEYPOT_FASTPATH_MIN_ROUTER_FAILS:
                     continue
                 if is_trusted_ssh_source(src):
@@ -3275,7 +3412,7 @@ def main():
                     continue
 
                 try:
-                    found_blocked, ok_blocked = is_in_list(ssh, src)
+                    found_blocked, ok_blocked = is_in_list(router_log_ssh, src)
                 except Exception:
                     found_blocked, ok_blocked = (False, False)
                 if ok_blocked and found_blocked:
@@ -3283,7 +3420,7 @@ def main():
                     continue
 
                 try:
-                    in_honeypot, honeypot_ok = is_in_address_list(ssh, HONEYPOT_BRUTEFORCE_LIST, src)
+                    in_honeypot, honeypot_ok = is_in_address_list(router_log_ssh, HONEYPOT_BRUTEFORCE_LIST, src)
                 except Exception:
                     in_honeypot, honeypot_ok = (False, False)
                 if honeypot_ok and in_honeypot:
@@ -3310,7 +3447,7 @@ def main():
                 display_atk_thr = atk_thr
 
                 redirect_result = add_ip_to_list(
-                    ssh,
+                    router_log_ssh,
                     src,
                     HONEYPOT_BRUTEFORCE_LIST,
                     comment="AI:SSH_BRUTE_FORCE",
@@ -3319,12 +3456,12 @@ def main():
                     continue
 
                 try:
-                    blocked_after, blocked_after_ok = is_in_list(ssh, src, force_refresh=True)
+                    blocked_after, blocked_after_ok = is_in_list(router_log_ssh, src, force_refresh=True)
                 except Exception:
                     blocked_after, blocked_after_ok = (False, False)
                 if blocked_after_ok and blocked_after:
                     try:
-                        remove_ip_from_list(ssh, src, HONEYPOT_BRUTEFORCE_LIST)
+                        remove_ip_from_list(router_log_ssh, src, HONEYPOT_BRUTEFORCE_LIST)
                     except Exception:
                         pass
                     with honeypot_lock:
@@ -3348,20 +3485,22 @@ def main():
                 if redirect_result == "already_listed":
                     continue
 
-                pretty_block(
-                    "SSH_BRUTE_FORCE",
-                    src,
-                    src_mac,
-                    ROUTER_IP,
-                    dst_mac,
-                    agg,
-                    display_atk,
-                    "",
-                    display_atk_thr,
-                    "",
-                    "REDIRECTED_TO_HONEYPOT",
-                    extra=f" {src} list={HONEYPOT_BRUTEFORCE_LIST} (router-log watcher {fail_count} fails)",
-                )
+                should_emit_event = _reserve_ssh_honeypot_event(src, ROUTER_IP, latest_failure_ts)
+                if should_emit_event:
+                    pretty_block(
+                        "SSH_BRUTE_FORCE",
+                        src,
+                        src_mac,
+                        ROUTER_IP,
+                        dst_mac,
+                        agg,
+                        display_atk,
+                        "",
+                        display_atk_thr,
+                        "",
+                        "REDIRECTED_TO_HONEYPOT",
+                        extra=f" {src} list={HONEYPOT_BRUTEFORCE_LIST} (router-log watcher {fail_count} fails)",
+                    )
 
                 evt = {
                     "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -3390,7 +3529,8 @@ def main():
                     "decision_source": f"router_log_{decision_source}",
                     "decision": "REDIRECTED_TO_HONEYPOT",
                 }
-                finalize_event(evt, "ATTACK", "SSH_BRUTE_FORCE", src, ROUTER_IP, row_feat)
+                if should_emit_event:
+                    finalize_event(evt, "ATTACK", "SSH_BRUTE_FORCE", src, ROUTER_IP, row_feat)
 
                 try:
                     log_honeypot_sample(
@@ -3618,6 +3758,54 @@ def main():
                             drop_pending_observed_brute(src, dst)
                             drop_pending_low_value_observed(src, dst, drop_related=True)
 
+                        if (
+                            rule == "OBS_SSH"
+                            and dst in ROUTER_INTERFACE_IPS
+                            and not is_trusted_ssh_source(src)
+                        ):
+                            evt = {
+                                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                                "category": "OBSERVED",
+                                "rule": rule,
+                                "src": src,
+                                "src_mac": resolve_endpoint_mac_strict_retry(src, macr, router_mac),
+                                "dst": dst,
+                                "dst_mac": resolve_endpoint_mac_strict(dst, macr, router_mac),
+                                "flows": a_eval.flows,
+                                "spkts": a_eval.s_pkts,
+                                "dpkts": a_eval.d_pkts,
+                                "sbytes": a_eval.s_bytes,
+                                "dbytes": a_eval.d_bytes,
+                                "uniq_dports": a_eval.uniq_dports(),
+                                "proto": a_eval.top_proto(),
+                                "top_dport": a_eval.top_dport(),
+                                "atk": "",
+                                "prod_atk": "",
+                                "mal": "",
+                                "prod_mal": "",
+                                "shadow_atk": "",
+                                "shadow_mal": "",
+                                "atk_thr": "",
+                                "mal_thr": "",
+                                "decision_source": "suppressed_router_ssh_observed",
+                                "decision": "OBSERVED_SUPPRESSED",
+                            }
+                            evt["event_id"] = build_event_id(evt["ts"], "OBSERVED", rule, src, dst)
+                            row_feat = build_row_features(WINDOW_SEC, a_eval)
+                            capture_online_sample_payload(evt, "OBSERVED", rule, src, dst, row_feat)
+                            aggs.pop((src, dst), None)
+                            history.pop((src, dst), None)
+                            consecutive_hits.pop((src, rule), None)
+                            continue
+
+                        if rule in {"SSH_BRUTE_FORCE", "OBS_SSH"} and _was_recently_honeypot_redirected(src, now):
+                            drop_pending_observed_brute(src, dst)
+                            drop_pending_low_value_observed(src, dst, drop_related=True)
+                            aggs.pop((src, dst), None)
+                            history.pop((src, dst), None)
+                            consecutive_hits.pop((src, rule), None)
+                            continue
+
                         if rule in OBSERVED_BRUTE_RULE_NAMES:
                             redirected_now = False
                             with honeypot_lock:
@@ -3685,8 +3873,12 @@ def main():
                             finalize_event(evt, category, rule, src, dst)
                             continue
 
-                        src_mac = resolve_endpoint_mac(src, macr, router_mac)
-                        dst_mac = resolve_endpoint_mac(dst, macr, router_mac)
+                        if rule == "SSH_BRUTE_FORCE":
+                            src_mac = resolve_endpoint_mac_strict_retry(src, macr, router_mac)
+                            dst_mac = resolve_endpoint_mac_strict(dst, macr, router_mac)
+                        else:
+                            src_mac = resolve_endpoint_mac(src, macr, router_mac)
+                            dst_mac = resolve_endpoint_mac(dst, macr, router_mac)
 
                         atk = ""
                         mal = ""
@@ -3740,7 +3932,7 @@ def main():
                                         ssh,
                                         src,
                                         router_brute_service,
-                                        force_refresh=True,
+                                        force_refresh=False,
                                     )
                                 except Exception:
                                     router_fail_count = 0
@@ -3895,6 +4087,7 @@ def main():
                         ai_pass = (consecutive_hits[key_hit] >= need)
                         should_block = ai_pass
                         decision = "NOT_BLOCKED"
+                        emit_redirect_event = True
 
                         if router_brute_service:
                             should_block = ai_pass
@@ -3909,20 +4102,7 @@ def main():
                             try:
                                 if rule in HONEYPOT_REDIRECT_RULES:
                                     if rule == "SSH_BRUTE_FORCE":
-                                        # Keep SSH honeypot logging single-sourced: once RouterOS
-                                        # auth-failure logs have confirmed the brute attempt, let
-                                        # the dedicated router-log watcher own the visible alert
-                                        # and redirect event. The window-close branch stays as a
-                                        # fallback only when router-log confirmation is absent.
                                         if _was_recently_honeypot_redirected(src, now):
-                                            aggs.pop((src, dst), None)
-                                            history.pop((src, dst), None)
-                                            consecutive_hits.pop((src, rule), None)
-                                            continue
-                                        if (
-                                            router_brute_service
-                                            and router_fail_count >= SSH_HONEYPOT_FASTPATH_MIN_ROUTER_FAILS
-                                        ):
                                             aggs.pop((src, dst), None)
                                             history.pop((src, dst), None)
                                             consecutive_hits.pop((src, rule), None)
@@ -3936,6 +4116,7 @@ def main():
                                     if redirect_result in {"added", "added_unverified"}:
                                         remember_attack_pair(src, dst, a, rule, recent_attack_pairs, now)
                                         decision = "REDIRECTED_TO_HONEYPOT"
+                                        _mark_recent_honeypot_redirect(src, now)
                                         mark_router_log_seen(src)
                                         drop_pending_observed_brute(src, dst)
                                         drop_pending_low_value_observed(src, dst, drop_related=True)
@@ -3945,7 +4126,9 @@ def main():
                                         consecutive_hits.pop((src, rule), None)
                                         with honeypot_lock:
                                             honeypot_redirected[(src, dst)] = True
-                                        if PRINT_BLOCK_EVENTS or PRINT_NONBLOCKED_ALERTS:
+                                        if rule == "SSH_BRUTE_FORCE":
+                                            emit_redirect_event = _reserve_ssh_honeypot_event(src, dst, now)
+                                        if emit_redirect_event and (PRINT_BLOCK_EVENTS or PRINT_NONBLOCKED_ALERTS):
                                             pretty_block(
                                                 rule,
                                                 src,
@@ -3985,6 +4168,7 @@ def main():
                                     elif redirect_result == "already_listed":
                                         remember_attack_pair(src, dst, a, rule, recent_attack_pairs, now)
                                         decision = "ALREADY_REDIRECTED_TO_HONEYPOT"
+                                        _mark_recent_honeypot_redirect(src, now)
                                         mark_router_log_seen(src)
                                         drop_pending_observed_brute(src, dst)
                                         drop_pending_low_value_observed(src, dst, drop_related=True)
@@ -3994,7 +4178,9 @@ def main():
                                         consecutive_hits.pop((src, rule), None)
                                         with honeypot_lock:
                                             honeypot_redirected[(src, dst)] = True
-                                        if PRINT_NONBLOCKED_ALERTS:
+                                        if rule == "SSH_BRUTE_FORCE":
+                                            emit_redirect_event = _reserve_ssh_honeypot_event(src, dst, now)
+                                        if emit_redirect_event and PRINT_NONBLOCKED_ALERTS:
                                             pretty_block(
                                                 rule,
                                                 src,
@@ -4149,7 +4335,12 @@ def main():
                             "decision_source": decision_source,
                             "decision": decision
                         }
-                        finalize_event(evt, category, rule, src, dst, row_feat)
+                        if not (
+                            rule == "SSH_BRUTE_FORCE"
+                            and decision in {"REDIRECTED_TO_HONEYPOT", "ALREADY_REDIRECTED_TO_HONEYPOT"}
+                            and not emit_redirect_event
+                        ):
+                            finalize_event(evt, category, rule, src, dst, row_feat)
 
                 aggs.clear()
                 window_start = now
@@ -4242,6 +4433,12 @@ def main():
             pass
         except Exception:
             pass
+        try:
+            router_log_ssh.close()
+        except KeyboardInterrupt:
+            pass
+        except Exception:
+            pass
         if AUTO_GENERATE_REPORT_ON_EXIT:
             try:
                 jsonl_path = os.path.abspath(JSONL_LOG)
@@ -4266,4 +4463,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

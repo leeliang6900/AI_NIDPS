@@ -178,7 +178,7 @@ def _should_train_now(
 
     return trained_variants.get(variant_signature, 0) <= 0 and trained_signatures.get(signature, 0) <= 0
 
-
+# ===================== 列出可以训练的样本 =====================
 def list_distinct_trainable_samples() -> List[OnlineSample]:
     all_samples = refresh_learning_state()
     trained_families = _trained_family_counts(all_samples)
@@ -207,8 +207,9 @@ def list_distinct_trainable_samples() -> List[OnlineSample]:
         selected_variants.add(variant_signature)
 
     return selected
+# ===================== End =====================
 
-
+# ===================== 选要训练的样本 =====================
 def select_samples(limit: int, max_weight: float = 0.0, max_samples: int = 0, min_samples: int = 1) -> List[OnlineSample]:
     samples = list_distinct_trainable_samples()
     if limit > 0:
@@ -227,8 +228,9 @@ def select_samples(limit: int, max_weight: float = 0.0, max_samples: int = 0, mi
         selected.append(sample)
         total_weight += sample_weight
     return selected
+# ===================== END =====================
 
-
+# ===================== 最后可单样本训练的样本 =====================
 def can_auto_train_single_tail_sample(samples: List[OnlineSample]) -> bool:
     if len(samples) != 1:
         return False
@@ -240,8 +242,9 @@ def can_auto_train_single_tail_sample(samples: List[OnlineSample]) -> bool:
         and int(getattr(sample, 'reject_count', 0) or 0) <= 0
         and float(getattr(sample, 'learn_weight', 0.0) or 0.0) > 0.0
     )
+# ===================== END =====================
 
-
+# ===================== Shadow Training的主逻辑 =====================
 def train_samples(samples: List[OnlineSample], checkpoint: bool = False, min_reference_samples: int = 5) -> Dict[str, object]:
     if not samples:
         empty_eval = {
@@ -398,8 +401,9 @@ def train_samples(samples: List[OnlineSample], checkpoint: bool = False, min_ref
         'postCheckpoint': post_checkpoint,
         'evaluation': evaluation_payload,
     }
+# ===================== END =====================
 
-
+# ===================== 从Ready queue触发训练  =====================
 def train_ready_samples(
     limit: int = 0,
     checkpoint: bool = False,
@@ -431,7 +435,7 @@ def train_ready_samples(
         }
 
     return train_samples(samples, checkpoint=checkpoint, min_reference_samples=min_reference_samples)
-
+# ===================== END =====================
 
 def main() -> None:
     args = parse_args()

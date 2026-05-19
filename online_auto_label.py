@@ -111,7 +111,7 @@ def is_manual_label_source(value: Any) -> bool:
     source = str(value or '').strip()
     return bool(source) and not source.startswith('auto')
 
-
+# ===================== Family from Rule =====================
 def infer_family_from_rule(sample) -> Optional[Dict[str, Any]]:
     decision = str(sample.decision or '').upper()
     rule = str(sample.rule or '').upper()
@@ -123,8 +123,9 @@ def infer_family_from_rule(sample) -> Optional[Dict[str, Any]]:
     if decision == 'SUPPRESSED_VICTIM_LEG':
         return family_payload('benign.victim_leg', 'Victim Response Leg', 'high', 'known_rule', 0.02)
     return None
+# ===================== End =====================
 
-
+# ===================== Family from behavior =====================
 def infer_family_from_behavior(sample) -> Dict[str, Any]:
     feat = sample.features or {}
     decision = str(sample.decision or '').upper()
@@ -198,7 +199,7 @@ def infer_family_from_behavior(sample) -> Dict[str, Any]:
         return family_payload('benign.unknown_internal_like', 'Unknown Internal Traffic', 'low', 'behavior_heuristic', 0.60)
 
     return family_payload('unknown.unclassified', 'Unclassified Traffic', 'low', 'behavior_heuristic', 0.92)
-
+# ===================== End =====================
 
 def infer_family_annotation(sample) -> Dict[str, Any]:
     return merge_payloads(
@@ -406,10 +407,10 @@ def auto_label_from_behavior(sample) -> Optional[Dict[str, Any]]:
         'confidence': 'low',
     })
 
-
+# ===================== Auto Label =====================
 def auto_label_sample(sample) -> Optional[Dict[str, Any]]:
     return auto_label_from_local_signals(sample) or auto_label_from_behavior(sample)
-
+# ===================== End =====================
 
 def apply_family(sample, payload: Dict[str, Any]) -> bool:
     changed = False
@@ -442,7 +443,7 @@ def apply_binary_labels(sample, payload: Dict[str, Any]) -> bool:
     sample.trained = False
     return True
 
-
+# ===================== Auto Label Pending =====================
 def auto_label_pending(limit: int = 0) -> Dict[str, Any]:
     all_samples = list(STORE.iter_samples() or [])
     labeled = 0
@@ -499,7 +500,7 @@ def auto_label_pending(limit: int = 0) -> Dict[str, Any]:
         'family_annotated': family_annotated,
         'sources': by_source,
     }
-
+# ===================== End =====================
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Auto-label pending online-learning samples using local behavior inference and high-confidence signals.')
